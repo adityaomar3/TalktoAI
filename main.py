@@ -74,6 +74,18 @@ class RoomInfo(BaseModel):
     room_name: str
     room_condition: str
 
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+
+class UserProfileResponse(BaseModel):
+    user_id: str
+    name: str
+    age: Optional[int] = None
+    onboarding: str
+    created_at: str
+    updated_at: str    
+
 # Database connection management
 async def get_db_pool():
     global db_pool
@@ -166,6 +178,93 @@ async def ensure_user_exists(conn, user_id: str, user_data: Optional[Dict] = Non
         logger.error(f"Error ensuring user exists: {str(e)}")
         raise HTTPException(status_code=500, detail="Database error")
 
+async def get_current_user_with_metadata(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        token = credentials.credentials
+        logger.info(f"Attempting to decode token: {token[:20]}...")
+        payload = jwt.decode(
+            token, 
+            SUPABASE_JWT_SECRET, 
+            algorithms=["HS256"],
+            audience="authenticated",
+            issuer=PROJECT_ISSUER
+        )
+        user_id = payload.get("sub")
+        if not user_id:
+            logger.error("No 'sub' claim found in token")
+            raise HTTPException(status_code=401, detail="Invalid token: no user ID")
+        logger.info(f"Successfully authenticated user: {user_id}")
+        return user_id, payload
+    except jwt.ExpiredSignatureError:
+        logger.error("Token expired")
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError as e:
+        logger.error(f"Invalid token: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in authentication: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+
+@app.post("/api/users/profile/sync")
+async def sync_user_profile_from_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    conn = Depends(get_db)
+):
+    """
+    Sync user profile from JWT token metadata to database
+    This extracts name and age from the token and stores it in the database
+    """
+    try:
+        # Get user ID and full token payload
+        user_id, token_payload = await get_current_user_with_metadata(credentials)
+        
+        # Extract user metadata from token
+        user_metadata = token_payload.get('user_metadata', {})
+        if not user_metadata:
+            # Fallback to raw_user_meta_data
+            user_metadata = token_payload.get('raw_user_meta_data', {})
+        
+        name = user_metadata.get('name', 'Anonymous')
+        age = user_metadata.get('age')
+        
+        logger.info(f"Syncing profile for user {user_id}: name={name}, age={age}")
+        
+        # Ensure user exists and update profile
+        await ensure_user_exists(conn, user_id, token_payload)
+        
+        # Update user profile with metadata from token
+        await conn.execute("""
+            UPDATE users 
+            SET name = $1, age = $2, onboarding = 'Done', updated_at = NOW()
+            WHERE id = $3
+        """, name, age, user_id)
+        
+        # Get updated user data
+        user_data = await conn.fetchrow("""
+            SELECT id, name, age, onboarding, created_at, updated_at 
+            FROM users 
+            WHERE id = $1
+        """, user_id)
+        
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found after sync")
+        
+        return UserProfileResponse(
+            user_id=str(user_data['id']), 
+            name=user_data['name'],
+            age=user_data['age'],
+            onboarding=user_data['onboarding'],
+            created_at=user_data['created_at'].isoformat(),
+            updated_at=user_data['updated_at'].isoformat()
+        )
+        
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
+    except Exception as e:
+        logger.error(f"Error syncing user profile: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to sync user profile")
+    
 async def create_session(conn, user_id: str, room_id: str):
     """Create a new session and turn room condition to 'on'"""
     try:
