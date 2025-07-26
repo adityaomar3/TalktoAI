@@ -52,6 +52,7 @@ if not DATABASE_URL:
 LIVEKIT_API_KEY = os.getenv('LIVEKIT_API_KEY')
 LIVEKIT_API_SECRET = os.getenv('LIVEKIT_API_SECRET')
 LIVEKIT_URL = os.getenv('LIVEKIT_URL', 'wss://localhost:7880')
+PROJECT_ISSUER = os.getenv('SUPABASE_PROJECT_ISSUER')
 
 if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
     raise ValueError("LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required")
@@ -188,7 +189,7 @@ async def get_current_user_with_metadata(credentials: HTTPAuthorizationCredentia
             SUPABASE_JWT_SECRET,
             algorithms=["HS256"],
             audience="authenticated",
-            issuer="https://qivmwvqzgyykzmmofnqz.supabase.co/auth/v1"
+            issuer=PROJECT_ISSUER
         )
         user_id = payload.get("sub")
         if not user_id:
